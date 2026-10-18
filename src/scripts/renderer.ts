@@ -82,16 +82,29 @@ export class Renderer {
 				inputFiles[index * 2 + 1] = newFileName;
 				concatTracks[index] = `[v${index}]`;
 
+				// FFmpeg 0.10 passes command-line arguments as ASCII. Keep user text
+				// out of the filter graph and load UTF-8 bytes from files instead.
+				this.ffmpeg.FS(
+					'writeFile',
+					`bottom-text-${index}.txt`,
+					new TextEncoder().encode(bottomTextSettings.text)
+				);
+				this.ffmpeg.FS(
+					'writeFile',
+					`top-text-${index}.txt`,
+					new TextEncoder().encode(topTextSettings.text)
+				);
+
 				filters[index] = `[${index}:v]
 			scale=${filmWidth}:${filmSettings.filmHeight}:force_original_aspect_ratio=decrease,
 			pad=${filmWidth}:${filmHeight}:(ow-iw)/2:(oh-ih)/2,
 			setsar=1/1,
-			drawtext=fontfile=impact.ttf:text='${bottomTextSettings.text}':fontcolor=white:fontsize=${
+			drawtext=fontfile=impact.ttf:textfile=bottom-text-${index}.txt:expansion=none:fontcolor=white:fontsize=${
 					bottomTextSettings.fontSize
 				}:borderw=${bottomTextSettings.borderWidth}:x=(w-text_w)/2:y=(h-text_h) - ${
 					bottomTextSettings.fontSize / 2
 				},
-			drawtext=fontfile=impact.ttf:text='${topTextSettings.text}':fontcolor=white:fontsize=${
+			drawtext=fontfile=impact.ttf:textfile=top-text-${index}.txt:expansion=none:fontcolor=white:fontsize=${
 					topTextSettings.fontSize
 				}:borderw=${topTextSettings.borderWidth}:x=(w-text_w)/2:y=${topTextSettings.fontSize / 2},
 			drawtext=fontfile=impact.ttf:text='gojodzojo.github.io/slander-meme-generator':fontsize=10 * (${
@@ -111,23 +124,31 @@ export class Renderer {
 		inputFiles.push('-i', musicFileName);
 
 		const fullOutputFileName = `${Math.random()}.${outputFileFormat}`;
-		await this.ffmpeg.run(
-			...inputFiles,
-			'-filter_complex',
-			`${filters.join(' ')}
-			${concatTracks.join('')}
-			concat=n=${scenes.length}:v=1:a=0 [v]`,
-			'-filter_complex',
-			`[${scenes.length}:a] atempo=${musicSettings.speed} [a]`,
-			'-vsync',
-			'vfr',
-			'-map',
-			'[v]',
-			'-map',
-			'[a]',
-			'-shortest',
-			fullOutputFileName
-		);
+		try {
+			await this.ffmpeg.run(
+				...inputFiles,
+				'-filter_complex',
+				`${filters.join(' ')}
+				${concatTracks.join('')}
+				concat=n=${scenes.length}:v=1:a=0 [v]`,
+				'-filter_complex',
+				`[${scenes.length}:a] atempo=${musicSettings.speed} [a]`,
+				'-vsync',
+				'vfr',
+				'-map',
+				'[v]',
+				'-map',
+				'[a]',
+				'-shortest',
+				fullOutputFileName
+			);
+		} finally {
+			// Do not retain captions in the WASM filesystem between renders.
+			scenes.forEach((_, index) => {
+				this.ffmpeg.FS('unlink', `bottom-text-${index}.txt`);
+				this.ffmpeg.FS('unlink', `top-text-${index}.txt`);
+			});
+		}
 
 		const data = this.ffmpeg.FS('readFile', fullOutputFileName);
 
